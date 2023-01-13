@@ -2,17 +2,21 @@ use std::f32::consts::PI;
 
 use bevy::{
     prelude::*, 
+    sprite::MaterialMesh2dBundle, 
+    input::{keyboard::KeyboardInput, ButtonState},
     render::{mesh::Indices, render_resource::PrimitiveTopology},
-    sprite::MaterialMesh2dBundle, transform, input::{keyboard::KeyboardInput, ButtonState}
 };
 
-const WINDOW_WIDTH: usize = 1024;
-const WINDOW_HEIGHT: usize = 720;
-const ASTEROID_VELOCITY:f32 = 1.0;
-const SHIP_ROTATION_SPEED: f32 = 0.15;
-const SHIP_ACCELERATE_SPEED: f32 = 1.0;
-const BULLET_VELOCITY:f32 = ASTEROID_VELOCITY * 2.0;
-const FIRE_RANGE: f32 = WINDOW_HEIGHT as f32 / 3.0;
+const WINDOW_WIDTH: usize = 1024; //screen width
+const WINDOW_HEIGHT: usize = 720; //screen height
+const ASTEROID_VELOCITY:f32 = 1.0; //asteroid speed
+const SHIP_ROTATION_SPEED: f32 = 0.15; //ship rotation speed
+const SHIP_ACCELERATE_SPEED: f32 = 0.7; //ship acceleration
+const SHIP_MAXIMUM_SPEED: f32 = 7.0; //ship max speed
+const SHIP_COLLISION_DEVIDER: f32 = 4.0; //Configure collision radius for ship
+const SPACE_RESISTANCE: f32 = 0.05; // getting ship slower
+const BULLET_VELOCITY:f32 = SHIP_MAXIMUM_SPEED * 2.0; //shup's bullet speed
+const FIRE_RANGE: f32 = WINDOW_HEIGHT as f32 / 2.0; // bullet range
 const VIEWPORT_MAX_X: f32 = WINDOW_WIDTH as f32 / 2.0;
 const VIEWPORT_MIN_X: f32 = -VIEWPORT_MAX_X;
 const VIEWPORT_MAX_Y: f32 = WINDOW_HEIGHT as f32 / 2.0;
@@ -27,13 +31,16 @@ fn main() {
         .add_system(update_velocity)
         .add_system(update_position)
         .add_system(update_asteroid)
+        .add_system(space_resistance)
         .add_system(ship_rotation)
         .add_system(fire_range)
         .add_system(keyboard_events)
+        .add_system(detect_ship_collision)
+        .add_system(detect_bullet_collision)
         .run();
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum AsteroidSize{
     Big, Medium, Small
 }
@@ -41,6 +48,13 @@ enum AsteroidSize{
 #[derive(Component)]
 struct Ship{
     rotation: f32,
+}
+
+impl Ship {
+    fn get_direction (&self) -> Vec2 {
+        let (y,x) = (self.rotation + 2.0 * PI / 4.0).sin_cos();
+        Vec2::new(x,y)
+    }
 }
 
 #[derive(Component)]
@@ -187,13 +201,18 @@ fn keyboard_events(
         }
 
         if keys.pressed(KeyCode::Up) {
-            velocity.0 = velocity.0.normalize_or_zero() * (velocity.0.length() + SHIP_ACCELERATE_SPEED);
+            velocity.0 += ship.get_direction() * SHIP_ACCELERATE_SPEED;
+
+            if velocity.0.length() > SHIP_MAXIMUM_SPEED {
+                velocity.0 = velocity.0.normalize_or_zero() * SHIP_MAXIMUM_SPEED;
+
+            }
         }
     
 
     for ev in key_evr.iter() {
         if let (ButtonState::Pressed, Some(KeyCode::Space)) = (ev.state, ev.key_code) {
-            let (y,x) = (ship.rotation + 2.0 * PI/ 4.0).sin_cos();
+            
             commands.spawn(MaterialMesh2dBundle {
                 mesh: meshes.add(Mesh::from(shape::Circle::default())).into(),
                 transform: Transform::default().with_scale(Vec3::splat(6.0)),
@@ -205,7 +224,7 @@ fn keyboard_events(
                 start: position.0.clone(),
             })
             .insert(Position(position.0.clone()))
-            .insert(Velocity(Vec2::new(x,y).normalize() * BULLET_VELOCITY));
+            .insert(Velocity(ship.get_direction().normalize() * BULLET_VELOCITY));
         }
     }
     }
@@ -218,6 +237,82 @@ fn fire_range(
     for (entity, bullet, position) in &mut query{
         if (bullet.start - position.0).length() > FIRE_RANGE {
             commands.entity(entity).despawn();
+        }
+    }
+}
+
+fn space_resistance(
+    keys: Res<Input<KeyCode>>, 
+    mut query: Query<&mut Velocity, With<Ship>>
+) {
+    if !keys.pressed(KeyCode::Up) {
+        for mut velocity in &mut query {
+            velocity.0 *= 1.0 - SPACE_RESISTANCE;
+        }
+    }
+}
+
+fn detect_ship_collision(
+    mut commands: Commands,
+    ship_query: Query<(Entity, &Transform, &Position), With<Ship>>,
+    asteroid_query:Query<(&Transform, &Position), With<Asteroid>>,
+){
+    for (ship_entity, ship_transform, ship_position ) in &ship_query {
+        for (asteroid_transform, asteroid_position) in &asteroid_query {
+            let ship_size = ship_transform.scale.max_element();
+            let asteroid_size = asteroid_transform.scale.max_element();
+
+            let distance = (ship_position.0 - asteroid_position.0).length();
+            if distance < ship_size / SHIP_COLLISION_DEVIDER  + asteroid_size / 2.0 {
+                commands.entity(ship_entity).despawn();
+            }
+        }
+    }
+}
+
+fn detect_bullet_collision(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    bullet_query: Query<(Entity, &Transform, &Position), With<Bullet>>,
+    asteroid_query:Query<(Entity, &Asteroid, &Transform, &Position), With<Asteroid>>,
+){
+    for (bullet_entity, bullet_transform, bullet_position ) in &bullet_query {
+        for (asteroid_entity, asteroid, asteroid_transform, asteroid_position) in &asteroid_query {
+            
+            let bullet_size = bullet_transform.scale.max_element();
+            let asteroid_size = asteroid_transform.scale.max_element();
+
+            let distance = (bullet_position.0 - asteroid_position.0).length();
+            if distance < (bullet_size + asteroid_size) / 2.0 {
+                commands.entity(bullet_entity).despawn();
+                commands.entity(asteroid_entity).despawn();
+
+                let asteroid_new_size = match asteroid.size {
+                    AsteroidSize::Big => Some(AsteroidSize::Medium),
+                    AsteroidSize::Medium => Some(AsteroidSize::Small),
+                    AsteroidSize::Small => None,
+                };
+
+                if let Some(asteroid_new_size) = asteroid_new_size {
+                    for _ in 0..2 {
+                        //this cycle placing asteroid in random place in window
+                        commands.spawn(MaterialMesh2dBundle {
+                            mesh: meshes.add(Mesh::from(shape::Circle::default())).into(),
+                            transform: Transform::default().with_translation(Vec3::new(0.0,0.0,1.0)),
+                            material: materials
+                                    .add(ColorMaterial::from(Color::GRAY)),
+                            ..default()
+                        })
+                        .insert(Asteroid {
+                            size: asteroid_new_size,
+                        })
+                        .insert(Position(asteroid_position.0.clone()))
+                        .insert(Velocity(get_random_point().normalize() * ASTEROID_VELOCITY));
+                
+                    }
+                }
+            }
         }
     }
 }
