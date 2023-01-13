@@ -1,12 +1,18 @@
+use std::f32::consts::PI;
+
 use bevy::{
     prelude::*, 
     render::{mesh::Indices, render_resource::PrimitiveTopology},
-    sprite::MaterialMesh2dBundle, transform
+    sprite::MaterialMesh2dBundle, transform, input::{keyboard::KeyboardInput, ButtonState}
 };
 
 const WINDOW_WIDTH: usize = 1024;
 const WINDOW_HEIGHT: usize = 720;
 const ASTEROID_VELOCITY:f32 = 1.0;
+const SHIP_ROTATION_SPEED: f32 = 0.15;
+const SHIP_ACCELERATE_SPEED: f32 = 1.0;
+const BULLET_VELOCITY:f32 = ASTEROID_VELOCITY * 2.0;
+const FIRE_RANGE: f32 = WINDOW_HEIGHT as f32 / 3.0;
 const VIEWPORT_MAX_X: f32 = WINDOW_WIDTH as f32 / 2.0;
 const VIEWPORT_MIN_X: f32 = -VIEWPORT_MAX_X;
 const VIEWPORT_MAX_Y: f32 = WINDOW_HEIGHT as f32 / 2.0;
@@ -21,6 +27,9 @@ fn main() {
         .add_system(update_velocity)
         .add_system(update_position)
         .add_system(update_asteroid)
+        .add_system(ship_rotation)
+        .add_system(fire_range)
+        .add_system(keyboard_events)
         .run();
 }
 
@@ -29,19 +38,26 @@ enum AsteroidSize{
     Big, Medium, Small
 }
 
-#[derive(Component, Debug)]
-struct Ship;
+#[derive(Component)]
+struct Ship{
+    rotation: f32,
+}
 
-#[derive(Component, Debug)]
+#[derive(Component)]
+struct Bullet {
+    start:Vec2,
+}
+
+#[derive(Component)]
 struct Asteroid {
     size: AsteroidSize,
 }
 
-#[derive(Component, Debug)]
+#[derive(Component)]
 struct Velocity (Vec2);
 
 
-#[derive(Component, Debug)]
+#[derive(Component)]
 struct Position (Vec2);
 
 
@@ -76,6 +92,7 @@ fn setup(
     mut windows: ResMut<Windows>,
 ) {
     let window = windows.get_primary_mut().unwrap();
+
     window.set_resolution(WINDOW_WIDTH as f32, WINDOW_HEIGHT as f32);
 
     commands.spawn(Camera2dBundle::default());
@@ -87,9 +104,9 @@ fn setup(
                 .add(ColorMaterial::from(Color::WHITE)),
         ..default()
     })
+    .insert(Ship { rotation: 0.0 })
     .insert(Position(Vec2::new(0.0, 0.0)))
-    .insert(Velocity(Vec2::splat(0.0)))
-    .insert(Ship);
+    .insert(Velocity(Vec2::splat(0.0)));
 
     for _ in 0..4 {
         //this cycle placing asteroid in random place in window
@@ -100,12 +117,19 @@ fn setup(
                     .add(ColorMaterial::from(Color::GRAY)),
             ..default()
         })
-        .insert(Velocity(get_random_point().normalize() * ASTEROID_VELOCITY))
         .insert(Asteroid {
             size: AsteroidSize::Big,
         })
-        .insert(Position(get_random_point()));
+        .insert(Position(get_random_point()))
+        .insert(Velocity(get_random_point().normalize() * ASTEROID_VELOCITY));
 
+    }
+}
+
+fn ship_rotation(mut query: Query<(&Ship, &mut Transform)>) {
+    for (ship, mut transform) in &mut query {
+        let angle = ship.rotation;
+        transform.rotation = Quat::from_rotation_z(angle);
     }
 }
 
@@ -120,28 +144,80 @@ fn update_asteroid(mut query: Query<(&Asteroid, &mut Transform)>) {
     for (asteroid, mut transform) in &mut query {
         transform.scale = Vec3::splat(match asteroid.size {
             AsteroidSize::Big => 100.0,
-            AsteroidSize::  Medium => 50.0,
+            AsteroidSize::Medium => 50.0,
             AsteroidSize::Small => 25.0,
         })
     }
 }
 
-fn update_velocity(mut query: Query<(&Velocity, &mut Position)>) {
+fn update_velocity(mut query: Query<(&Velocity, &Transform, &mut Position)>) {
     //function for asteroid movieng
-    for (velocity, mut position) in &mut query {
+    for (velocity, transform, mut position) in &mut query {
         let mut new_position = position.0 + velocity.0;
+        let scale = transform.scale.max_element() / 2.0;
 
-        if new_position.x > VIEWPORT_MAX_X {
-            new_position.x -= WINDOW_WIDTH as f32;
-        } else if new_position.x < VIEWPORT_MIN_X{
-            new_position.x += WINDOW_WIDTH as f32
+        if new_position.x > VIEWPORT_MAX_X + scale{
+            new_position.x = VIEWPORT_MIN_X - scale;
+        } else if new_position.x < VIEWPORT_MIN_X - scale {
+            new_position.x = VIEWPORT_MAX_X + scale;
         }
 
-        if new_position.y > VIEWPORT_MAX_Y {
-            new_position.y -= WINDOW_HEIGHT as f32;
-        } else if new_position.y < VIEWPORT_MIN_Y {
-            new_position.y += WINDOW_HEIGHT as f32
+        if new_position.y > VIEWPORT_MAX_Y + scale {
+            new_position.y = VIEWPORT_MIN_Y - scale;
+        } else if new_position.y < VIEWPORT_MIN_Y - scale {
+            new_position.y = VIEWPORT_MAX_Y + scale;
         }
         position.0 = new_position;
+    }
+}
+
+fn keyboard_events(
+    mut commands: Commands,
+    keys: Res<Input<KeyCode>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut key_evr: EventReader<KeyboardInput>,
+    mut query: Query<(&mut Ship, &Position, &mut Velocity)>,
+) {
+    for (mut ship, position, mut velocity) in &mut query {
+        if keys.pressed(KeyCode::Left) {
+            ship.rotation += SHIP_ROTATION_SPEED;
+        } else if keys.pressed(KeyCode::Right) {
+            ship.rotation -= SHIP_ROTATION_SPEED;
+        }
+
+        if keys.pressed(KeyCode::Up) {
+            velocity.0 = velocity.0.normalize_or_zero() * (velocity.0.length() + SHIP_ACCELERATE_SPEED);
+        }
+    
+
+    for ev in key_evr.iter() {
+        if let (ButtonState::Pressed, Some(KeyCode::Space)) = (ev.state, ev.key_code) {
+            let (y,x) = (ship.rotation + 2.0 * PI/ 4.0).sin_cos();
+            commands.spawn(MaterialMesh2dBundle {
+                mesh: meshes.add(Mesh::from(shape::Circle::default())).into(),
+                transform: Transform::default().with_scale(Vec3::splat(6.0)),
+                material: materials
+                        .add(ColorMaterial::from(Color::WHITE)),
+                ..default()
+            })
+            .insert(Bullet {
+                start: position.0.clone(),
+            })
+            .insert(Position(position.0.clone()))
+            .insert(Velocity(Vec2::new(x,y).normalize() * BULLET_VELOCITY));
+        }
+    }
+    }
+}
+
+fn fire_range(
+    mut commands: Commands,
+    mut query: Query<(Entity, &Bullet, &Position)>
+){
+    for (entity, bullet, position) in &mut query{
+        if (bullet.start - position.0).length() > FIRE_RANGE {
+            commands.entity(entity).despawn();
+        }
     }
 }
