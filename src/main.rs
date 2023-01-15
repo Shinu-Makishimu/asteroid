@@ -1,5 +1,4 @@
 use std::f32::consts::PI;
-
 use bevy::{
     prelude::*, 
     sprite::MaterialMesh2dBundle, 
@@ -10,7 +9,8 @@ use bevy::{
 const WINDOW_WIDTH: usize = 1024; //screen width
 const WINDOW_HEIGHT: usize = 720; //screen height
 const ASTEROID_VELOCITY:f32 = 1.0; //asteroid speed
-const SHIP_ROTATION_SPEED: f32 = 0.15; //ship rotation speed
+const ASTEROID_START_SIZE:f32 = 100.0; //asteroid spawn size
+const SHIP_ROTATION_SPEED: f32 = 0.05; //ship rotation speed
 const SHIP_ACCELERATE_SPEED: f32 = 0.7; //ship acceleration
 const SHIP_MAXIMUM_SPEED: f32 = 7.0; //ship max speed
 const SHIP_COLLISION_DEVIDER: f32 = 4.0; //Configure collision radius for ship
@@ -43,6 +43,16 @@ fn main() {
 #[derive(Debug, Clone, Copy)]
 enum AsteroidSize{
     Big, Medium, Small
+}
+
+impl AsteroidSize {
+    fn get_scale(&self) ->f32 {
+        match self {
+            AsteroidSize::Big => ASTEROID_START_SIZE,
+            AsteroidSize::Medium => ASTEROID_START_SIZE * 0.5,
+            AsteroidSize::Small => ASTEROID_START_SIZE * 0.25,
+        }
+    }
 }
 
 #[derive(Component)]
@@ -156,11 +166,7 @@ fn update_position(mut query: Query<(&Position, &mut Transform)>) {
 fn update_asteroid(mut query: Query<(&Asteroid, &mut Transform)>) {
     //function for resize asteroid
     for (asteroid, mut transform) in &mut query {
-        transform.scale = Vec3::splat(match asteroid.size {
-            AsteroidSize::Big => 100.0,
-            AsteroidSize::Medium => 50.0,
-            AsteroidSize::Small => 25.0,
-        })
+        transform.scale = Vec3::splat(asteroid.size.get_scale())
     }
 }
 
@@ -187,11 +193,11 @@ fn update_velocity(mut query: Query<(&Velocity, &Transform, &mut Position)>) {
 
 fn keyboard_events(
     mut commands: Commands,
-    keys: Res<Input<KeyCode>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut key_evr: EventReader<KeyboardInput>,
     mut query: Query<(&mut Ship, &Position, &mut Velocity)>,
+    keys: Res<Input<KeyCode>>,
 ) {
     for (mut ship, position, mut velocity) in &mut query {
         if keys.pressed(KeyCode::Left) {
@@ -257,6 +263,7 @@ fn detect_ship_collision(
     ship_query: Query<(Entity, &Transform, &Position), With<Ship>>,
     asteroid_query:Query<(&Transform, &Position), With<Asteroid>>,
 ){
+    //ship collision is just a circle inside the triangle. It's most easyest way
     for (ship_entity, ship_transform, ship_position ) in &ship_query {
         for (asteroid_transform, asteroid_position) in &asteroid_query {
             let ship_size = ship_transform.scale.max_element();
